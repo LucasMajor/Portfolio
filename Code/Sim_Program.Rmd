@@ -1,0 +1,121 @@
+---
+title: "Senior_Project_UI"
+author: "Logan Gall, gall0487"
+date: "2023-04-12"
+output: html_document
+---
+
+Libraries:
+```{r}
+library(corrplot)
+library(randomForest)
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(caret)
+library(ROCR)
+library(tidyverse)
+library(GGally)
+library(ISLR)
+library(varImp)
+library(neuralnet)
+library(MASS)
+```
+
+Import Data and extra cleaning:
+```{r}
+data = read.csv("PhaseII_ET_WithNextWater.csv")
+data = na.omit(data)
+data = data[!(data$nextVWC_Observation==0.0),]
+analysis = data.frame(data$Irrigated.After, data$Mean.VWC, data$nextVWC_Observation, data$daysUntilNextObservation, data$CWB, data$CRain, data$CET, data$CIrr, data$nextET1, data$nextET2, data$nextET3, data$nextET4, data$nextET5, data$nextRain1, data$nextRain2, data$nextRain3, data$nextRain4, data$nextRain5)
+```
+
+Split and train model
+```{r}
+set.seed(10)
+split = sample.split(analysis$data.nextVWC_Observation, SplitRatio = 0.99)
+train = subset(analysis, split == TRUE)
+test = subset(analysis, split == FALSE)
+
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train)
+model = lm(data.nextVWC_Observation ~ data.Mean.VWC * data.CRain * data.CET * data.CIrr, data = train)
+summary(model)
+```
+
+```{r}
+startVWC = as.numeric(readline("Enter the current (day 0) VWC value of your plot [generally 0.1-0.4]: "))
+numDays = as.numeric(readline("Enter how many days out to predict [generally 1-5]: "))
+ET_vals = c()
+Rain_vals = c()
+for (i in 1:numDays) {
+  tempET = as.numeric(readline(paste("Enter the forecasted ET value for day", i-1, " [inches of water]: ")))
+  tempRain = as.numeric(readline(paste("Enter the forecasted Precipitation value for day", i-1, " [inches of water]: ")))
+  ET_vals = c(ET_vals, tempET)
+  Rain_vals = c(Rain_vals, tempRain)
+}
+
+VWC_thresh = c(0, 0.102635, 0.12228, 0.141925, 0.16157, 0.181215, 0.20086, 0.220505, 0.24015, 0.259795, 0.27944, 0.299085, 0.31873, 0.338375)
+
+VWC_tracker = matrix(nrow = 0, ncol = numDays+1)
+irr_tracker = matrix(nrow = 0, ncol = numDays+1)
+
+tempVWC = startVWC
+for (i in 1:14){
+  VWC_Pred = c(startVWC)
+  Irrigation = c()
+  tempVWC = startVWC
+  for (j in 1:numDays) {
+    tempWB = ET_vals[j] + Rain_vals[j]
+    irr_val = 0
+    irr = 0
+    if (tempVWC < VWC_thresh[i]){
+      tempWB = tempWB + 0.25
+      irr = 1
+      irr_val = 0.25
+    }
+    tempDF = data.frame(data.Mean.VWC = tempVWC, data.CWB = tempWB, data.CRain = Rain_vals[j], data.CET = ET_vals[j], data.CIrr = irr_val)
+    tempResp = predict(model, newdata = tempDF, type = 'response')
+    tempVWC = tempResp
+    VWC_Pred = c(VWC_Pred, tempVWC)
+    Irrigation = c(Irrigation, irr)
+  }
+  
+  if (tempVWC < VWC_thresh[i]){
+    irr = 1
+  }
+  Irrigation = c(Irrigation, irr)
+  
+  VWC_tracker = invisible(rbind(VWC_tracker, VWC_Pred))
+  irr_tracker = invisible(rbind(irr_tracker, Irrigation))
+}
+
+
+```
+
+```{r}
+VWC = c()
+Day = c()
+Threshold = c()
+Irrigated = c()
+threshold_vals = c("0","15","20","25","30","35","40","45","50","55","60", "65", "70", "75")
+#irrigated = c(FALSE,FALSE,FALSE, FALSE, FALSE,FALSE,TRUE,FALSE,TRUE,TRUE,TRUE,FALSE)
+
+
+for (i in 1:(numDays+1)) {
+  for (j in 1:4){
+    thr = 0
+    offset = 0
+    if (j == 1){thr = 1; offset = 0.0005}
+    else if (j == 2){thr = 4; offset = 0.001}
+    else if (j == 3){thr = 9; offset = -0.0005}
+    else if (j == 4){thr = 14; offset = -0.001}
+    Day = c(Day, (i-1))
+    VWC = c(VWC, VWC_tracker[thr, i] + offset)
+    Threshold = c(Threshold, threshold_vals[thr])
+    Irrigated = c(Irrigated, as.logical(irr_tracker[thr, i]))
+  }
+}
+df= data.frame(VWC,Day,Threshold,Irrigated)
+ggplot(data=df, aes(x=Day, y=VWC, shape=Irrigated))+geom_line(aes(colour=Threshold,group=interaction(Threshold)))+geom_point()+scale_shape_manual(values=c(16,6))
+```

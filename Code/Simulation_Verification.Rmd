@@ -1,0 +1,323 @@
+---
+title: "Sim_Verification"
+author: "Logan Gall, gall0487"
+date: "2023-05-03"
+output: html_document
+---
+
+
+Libraries:
+```{r}
+library(corrplot)
+library(randomForest)
+library(caTools)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(caret)
+library(ROCR)
+library(tidyverse)
+library(GGally)
+library(ISLR)
+library(varImp)
+library(neuralnet)
+library(MASS)
+```
+
+Import Data and extra cleaning:
+```{r}
+data = read.csv("PhaseII_ET_WithNextWater.csv")
+data = data[!(data$nextVWC_Observation==0.0),]
+data = na.omit(data)
+analysis = data.frame(data$Irrigated.After, data$Mean.VWC, data$nextVWC_Observation, data$daysUntilNextObservation, data$CWB, data$CRain, data$CET, data$CIrr, data$nextET1, data$nextET2, data$nextET3, data$nextET4, data$nextET5, data$nextRain1, data$nextRain2, data$nextRain3, data$nextRain4, data$nextRain5)
+```
+
+Split and train model
+```{r}
+#store cross validation results
+R2_fil = c()
+MSE_fil = c()
+
+numIterations = 25
+
+#cross validation iterations
+for (n in 1:numIterations) {
+
+#Set a constant seed so each model is compared equally
+set.seed(n)
+split = sample.split(analysis$data.nextVWC_Observation, SplitRatio = 0.60)
+train = subset(analysis, split == TRUE)
+test = subset(analysis, split == FALSE)
+
+#Fit a model
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train)
+model = lm(data.nextVWC_Observation ~ data.Mean.VWC * data.CRain * data.CET * data.CIrr, data = train)
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC + data.CRain + data.CET + data.CIrr + data.Mean.VWC:data.CRain + data.Mean.VWC:data.CET, data = train)
+#model = randomForest(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train, ntree = 200, nodesize = 10)
+#model = neuralnet(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data=train, hidden=c(9,10),linear.output=FALSE)
+
+#summary(model)
+
+#Actual and prediction values
+actual = c()
+pred = c()
+
+#Iterate through testing data set, prepping data for a single day step and predicting using one day step.
+for (i in 1:nrow(test)) {
+  row = test[i, ]
+  
+  #Future ET values
+  ET_vals = c(row$data.nextET1, row$data.nextET2, row$data.nextET3, row$data.nextET4, row$data.nextET5)
+  Rain_vals = c(row$data.nextRain1, row$data.nextRain2, row$data.nextRain3, row$data.nextRain4, row$data.nextRain5)
+  numDays = row$data.daysUntilNextObservation
+  startVWC = row$data.Mean.VWC
+  tempVWC = startVWC
+  for (j in 1:numDays) {
+    tempWB = ET_vals[j] + Rain_vals[j]
+    irrigate = 0.0
+    
+    #check if irrigation has occured
+    if (j == 1){
+      tempWB = tempWB = row$data.CIrr
+      irrigate = row$data.CIrr
+    }
+    
+    #Data frame just for prediction input data
+    tempDF = data.frame(data.Mean.VWC = tempVWC, data.CWB = tempWB, data.daysUntilNextObservation = 1, data.CIrr = irrigate, data.CRain = Rain_vals[j], data.CET= ET_vals[j])
+    tempResp = predict(model, newdata = tempDF, type = 'response')
+    tempVWC = tempResp
+  }
+  #After prediction is made, add to lists.
+  actual = c(actual, row$data.nextVWC_Observation) #this was startVWC at an earlier iteration, that was probably mistake.
+  pred = c(pred, tempVWC)
+}
+
+R2 = 1-sum((actual-pred)^2)/sum((actual-mean(actual))^2)
+R2_fil = c(R2_fil, R2)
+
+err = actual - pred
+MSE = mean((err^2))
+MSE_fil = c(MSE_fil, MSE)
+}
+
+mean(MSE_fil)
+mean(R2_fil)
+```
+
+Plot of interaction effects.
+```{r}
+# Load required libraries
+library(ggplot2)
+
+# Generate example data
+currVWC <- analysis$data.Mean.VWC
+Rain <- analysis$data.CRain
+NextObs <- analysis$data.nextVWC_Observation
+data <- data.frame(currVWC, Rain, NextObs)
+
+# Fit a linear model
+model <- lm(NextObs ~ currVWC * Rain, data = data)
+
+# Choose representative values for Rain (e.g., min, mean, and max)
+Rain_representative <- c(min(data$Rain), (min(data$Rain) + max(data$Rain)) / 2, max(data$Rain))
+
+# Create a new data frame for predictions
+data_pred <- expand.grid(currVWC = seq(min(data$currVWC), max(data$currVWC), length.out = 100),
+                         Rain = Rain_representative)
+data_pred$Y_pred <- predict(model, newdata = data_pred)
+
+# Convert the representative Rain values to a factor for plotting
+data_pred$Rain_type <- factor(data_pred$Rain,
+                              labels = c("0.0\" Rain", "0.69\" Rain", "1.37\" Rain"))
+
+# Create the line plot
+ggplot() +
+  geom_point(data = data, aes(x = currVWC, y = NextObs), alpha = 0.5) +
+  geom_line(data = data_pred, aes(x = currVWC, y = Y_pred, color = Rain_type), size = 1) +
+  labs(x = "Continuous Predictor (MeanVWC)",
+       y = "Response Variable (nextVWC_Observation)") + scale_color_manual(values=c("red2","deepskyblue","darkorange1")) + 
+   theme(legend.position = c(0.95, 0.1), # Position: bottom right corner
+        legend.justification = c(0.95, 0.1), # Justification: bottom right corner
+        legend.background = element_blank(), # Remove legend background
+        legend.box.background = element_rect(color = "transparent")) # Transparent box
+
+```
+
+Random Forest model tuning.
+```{r}
+R2_fil = c()
+MSE_fil = c()
+
+neurons = list()
+layers = list()
+R2nn = list()
+
+
+for (q in 1:500){
+for (n in 1:50) {
+set.seed(2)
+split = sample.split(analysis$data.nextVWC_Observation, SplitRatio = 0.60)
+train = subset(analysis, split == TRUE)
+test = subset(analysis, split == FALSE)
+
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train)
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC * data.CRain * data.CET * data.CIrr, data = train)
+model = randomForest(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train, ntree = q, nodesize = n)
+
+#model = neuralnet(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data=train, hidden=c(q,n),linear.output=FALSE)
+
+
+#summary(model)
+
+actual = c()
+pred = c()
+
+for (i in 1:nrow(test)) {
+  row = test[i, ]
+  ET_vals = c(row$data.nextET1, row$data.nextET2, row$data.nextET3, row$data.nextET4, row$data.nextET5)
+  Rain_vals = c(row$data.nextRain1, row$data.nextRain2, row$data.nextRain3, row$data.nextRain4, row$data.nextRain5)
+  numDays = row$data.daysUntilNextObservation
+  startVWC = row$data.Mean.VWC
+  tempVWC = startVWC
+  for (j in 1:numDays) {
+    tempWB = ET_vals[j] + Rain_vals[j]
+    irrigate = 0.0
+    if (j == 1){
+      tempWB = tempWB = row$data.CIrr
+      irrigate = row$data.CIrr
+    }
+    
+    tempDF = data.frame(data.Mean.VWC = tempVWC, data.CWB = tempWB, data.daysUntilNextObservation = 1, data.CIrr = irrigate, data.CRain = Rain_vals[j], data.CET= ET_vals[j])
+    tempResp = predict(model, newdata = tempDF, type = 'response')
+    tempVWC = tempResp
+  }
+  actual = c(actual, row$data.nextVWC_Observation)
+  pred = c(pred, tempVWC)
+}
+
+R2 = 1-sum((actual-pred)^2)/sum((actual-mean(actual))^2)
+R2_fil = c(R2_fil, R2)
+
+err = actual - pred
+MSE = mean((err^2))
+MSE_fil = c(MSE_fil, MSE)
+
+
+
+R2nn = append(R2nn,R2)
+trees = append(trees, q)
+nodes = append(nodes, n)
+}
+}
+
+#mean(MSE_fil)
+#mean(R2_fil)
+```
+
+Create plot for RF Tuning
+```{r}
+df2 = data.frame(unlist(trees), unlist(nodes), unlist(R2nn))
+df2 = df2[-391,]
+#data = data[!(data$nextVWC_Observation==0.0),]
+
+names(df2) = c("neurons","layers","R2nn")    
+p=ggplot(df2,aes(x=neurons, y=layers, col=R2nn))+geom_point()
+mid = mean(df2$R2nn)
+p+labs(x="Neurons",y="Layers",title="Neural Network R^2")+scale_color_gradient2(midpoint=mid, low="blue", mid="white",high="red", space ="Lab")
+```
+
+Neural Net Tuning
+```{r}
+R2_fil = c()
+MSE_fil = c()
+
+neurons = list()
+layers = list()
+R2nn = list()
+
+
+for (q in 1:30){
+for (n in 1:30) {
+set.seed(2)
+split = sample.split(analysis$data.nextVWC_Observation, SplitRatio = 0.60)
+train = subset(analysis, split == TRUE)
+test = subset(analysis, split == FALSE)
+
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train)
+#model = lm(data.nextVWC_Observation ~ data.Mean.VWC * data.CRain * data.CET * data.CIrr, data = train)
+#model = randomForest(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = train, ntree = 200, nodesize = 10)
+
+model = neuralnet(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data=train, hidden=c(q,n),linear.output=FALSE)
+
+
+#summary(model)
+
+actual = c()
+pred = c()
+
+for (i in 1:nrow(test)) {
+  row = test[i, ]
+  ET_vals = c(row$data.nextET1, row$data.nextET2, row$data.nextET3, row$data.nextET4, row$data.nextET5)
+  Rain_vals = c(row$data.nextRain1, row$data.nextRain2, row$data.nextRain3, row$data.nextRain4, row$data.nextRain5)
+  numDays = row$data.daysUntilNextObservation
+  startVWC = row$data.Mean.VWC
+  tempVWC = startVWC
+  for (j in 1:numDays) {
+    tempWB = ET_vals[j] + Rain_vals[j]
+    irrigate = 0.0
+    if (j == 1){
+      tempWB = tempWB = row$data.CIrr
+      irrigate = row$data.CIrr
+    }
+    
+    tempDF = data.frame(data.Mean.VWC = tempVWC, data.CWB = tempWB, data.daysUntilNextObservation = 1, data.CIrr = irrigate, data.CRain = Rain_vals[j], data.CET= ET_vals[j])
+    tempResp = predict(model, newdata = tempDF, type = 'response')
+    tempVWC = tempResp
+  }
+  actual = c(actual, row$data.nextVWC_Observation)
+  pred = c(pred, tempVWC)
+}
+
+R2 = 1-sum((actual-pred)^2)/sum((actual-mean(actual))^2)
+R2_fil = c(R2_fil, R2)
+
+err = actual - pred
+MSE = mean((err^2))
+MSE_fil = c(MSE_fil, MSE)
+
+
+
+R2nn = append(R2nn,R2)
+neurons = append(neurons, q)
+layers = append(layers, n)
+}
+}
+
+#mean(MSE_fil)
+#mean(R2_fil)
+```
+
+Create plot for NN Tuning
+```{r}
+df2 = data.frame(unlist(neurons), unlist(layers), unlist(R2nn))
+df2 = df2[-391,]
+#data = data[!(data$nextVWC_Observation==0.0),]
+
+names(df2) = c("neurons","layers","R2nn")    
+p=ggplot(df2,aes(x=neurons, y=layers, col=R2nn))+geom_point()
+mid = mean(df2$R2nn)
+p+labs(x="Neurons",y="Layers",title="Neural Network R^2")+scale_color_gradient2(midpoint=mid, low="blue", mid="white",high="red", space ="Lab")
+```
+
+
+Residual plots
+```{r}
+model = lm(data.nextVWC_Observation ~ data.Mean.VWC * data.CRain * data.CET * data.CIrr, data = analysis)
+ggplot(data,aes(x=predict(model),y=train$data.nextVWC_Observation-predict(model)))+geom_point() +labs(x="Fitted Values", y="Residuals",title="Linear Model Residuals")+xlim(0.1,0.43)+ylim(-0.13,0.13)
+
+model = randomForest(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data = analysis, ntree = 200, nodesize = 10)
+ggplot(data,aes(x=predict(model),y=train$data.nextVWC_Observation-predict(model)))+geom_point() +labs(x="Fitted Values", y="Residuals",title="Random Forest Residuals")+xlim(0.1,0.43)+ylim(-0.13,0.13)
+
+model = neuralnet(data.nextVWC_Observation ~ data.Mean.VWC + data.CWB, data=analysis, hidden=c(9,10),linear.output=FALSE)
+ggplot(data,aes(x=predict(model,type="response",newdata=train),y=train$data.nextVWC_Observation-predict(model,type="response",newdata=train)))+geom_point() +labs(x="Fitted Values", y="Residuals",title="Neural Network Residuals")+xlim(0.1,0.43)+ylim(-0.13,0.13)
+```
