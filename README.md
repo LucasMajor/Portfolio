@@ -13,4 +13,4 @@ could easily use it by inputting as few values as needed. This program can be us
 VWC and help the user decide the best time to irrigate in order to optimize total water usage 
 while still maintaining healthy turf grass. 
 
-For more info on the methods, please see the Project Walkthrough and Final Report files in the Docs folder.
+For more information on the methods, please see the Project Walkthrough and Final Report files in the Docs folder.
